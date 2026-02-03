@@ -1,0 +1,346 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum ContractorStatus {
+  ONBOARDING
+  PENDING_CHECKR
+  ACTIVE
+  PAUSED
+  OFFBOARDED
+}
+
+enum CheckrStatus {
+  NOT_STARTED
+  PENDING
+  CLEAR
+  CONSIDER
+  SUSPENDED
+  EXPIRED
+}
+
+enum DocumentType {
+  NDA
+  CIIAA
+  TERMS_OF_WORK
+  OFFER_LETTER
+  W8_BEN
+  W9
+}
+
+enum DocumentStatus {
+  PENDING
+  SENT
+  VIEWED
+  SIGNED
+  EXPIRED
+}
+
+enum TimeEntrySource {
+  INSIGHTFUL
+  INHOUSE
+  MANUAL
+  PIPELINE
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  IN_TRANSIT
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum ProjectStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+// ============================================
+// CORE MODELS
+// ============================================
+
+model Contractor {
+  id                  String            @id @default(cuid())
+  
+  // Basic Info
+  firstName           String
+  lastName            String
+  email               String            @unique
+  phone               String?
+  country             String
+  timezone            String?
+  
+  // Status
+  status              ContractorStatus  @default(ONBOARDING)
+  onboardingComplete  Boolean           @default(false)
+  paymentEligible     Boolean           @default(false)
+  
+  // Compensation
+  hourlyRate          Decimal           @db.Decimal(10, 2)
+  weeklyCap           Int?
+  currency            String            @default("USD")
+  
+  // External IDs
+  deelContractId      String?           @unique
+  deelEmployeeId      String?
+  insightfulUserId    String?           @unique
+  clerkUserId         String?           @unique
+  
+  // Checkr Integration
+  checkrCandidateId   String?
+  checkrInvitationId  String?
+  checkrReportId      String?
+  checkrStatus        CheckrStatus      @default(NOT_STARTED)
+  checkrCompletedAt   DateTime?
+  
+  // Source tracking
+  sourceApplication   String?
+  referredBy          String?
+  
+  // Timestamps
+  startDate           DateTime?
+  endDate             DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  
+  // Relations
+  documents           Document[]
+  timeEntries         TimeEntry[]
+  payments            Payment[]
+  projectAssignments  ProjectAssignment[]
+  notes               ContractorNote[]
+  
+  @@index([status])
+  @@index([email])
+  @@index([checkrStatus])
+}
+
+model Project {
+  id                    String          @id @default(cuid())
+  
+  // Basic Info
+  name                  String
+  code                  String          @unique
+  client                String?
+  description           String?
+  
+  // Budget & Status
+  status                ProjectStatus   @default(ACTIVE)
+  budget                Decimal?        @db.Decimal(12, 2)
+  budgetAlertAt         Decimal?        @db.Decimal(12, 2)
+  
+  // Time tracking config
+  payProductiveOnly     Boolean         @default(true)
+  nonProductiveDelta    Decimal         @default(0) @db.Decimal(3, 2)
+  
+  // Timestamps
+  startDate             DateTime?
+  endDate               DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  
+  // Relations
+  assignments           ProjectAssignment[]
+  timeEntries           TimeEntry[]
+  
+  @@index([status])
+  @@index([code])
+}
+
+model ProjectAssignment {
+  id              String      @id @default(cuid())
+  
+  contractorId    String
+  projectId       String
+  
+  role            String?
+  hourlyRate      Decimal?    @db.Decimal(10, 2)
+  weeklyCap       Int?
+  
+  isActive        Boolean     @default(true)
+  assignedAt      DateTime    @default(now())
+  removedAt       DateTime?
+  
+  contractor      Contractor  @relation(fields: [contractorId], references: [id])
+  project         Project     @relation(fields: [projectId], references: [id])
+  
+  @@unique([contractorId, projectId])
+  @@index([contractorId])
+  @@index([projectId])
+}
+
+model Document {
+  id              String          @id @default(cuid())
+  
+  contractorId    String
+  type            DocumentType
+  status          DocumentStatus  @default(PENDING)
+  
+  version         String?
+  fileUrl         String?
+  
+  sentAt          DateTime?
+  viewedAt        DateTime?
+  signedAt        DateTime?
+  expiresAt       DateTime?
+  
+  signatureData   Json?
+  
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  contractor      Contractor      @relation(fields: [contractorId], references: [id])
+  
+  @@index([contractorId])
+  @@index([type])
+  @@index([status])
+}
+
+model TimeEntry {
+  id                  String          @id @default(cuid())
+  
+  contractorId        String
+  projectId           String?
+  
+  date                DateTime        @db.Date
+  totalHours          Decimal         @db.Decimal(5, 2)
+  productiveHours     Decimal?        @db.Decimal(5, 2)
+  nonProductiveHours  Decimal?        @db.Decimal(5, 2)
+  
+  source              TimeEntrySource
+  externalId          String?
+  syncedAt            DateTime?
+  
+  approved            Boolean         @default(false)
+  approvedBy          String?
+  approvedAt          DateTime?
+  
+  paymentId           String?
+  
+  notes               String?
+  screenshotCount     Int?
+  
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  
+  contractor          Contractor      @relation(fields: [contractorId], references: [id])
+  project             Project?        @relation(fields: [projectId], references: [id])
+  payment             Payment?        @relation(fields: [paymentId], references: [id])
+  
+  @@unique([contractorId, date, source, externalId])
+  @@index([contractorId])
+  @@index([projectId])
+  @@index([date])
+  @@index([approved])
+}
+
+model Payment {
+  id              String          @id @default(cuid())
+  
+  contractorId    String
+  
+  periodStart     DateTime        @db.Date
+  periodEnd       DateTime        @db.Date
+  
+  totalHours      Decimal         @db.Decimal(6, 2)
+  hourlyRate      Decimal         @db.Decimal(10, 2)
+  grossAmount     Decimal         @db.Decimal(12, 2)
+  netAmount       Decimal         @db.Decimal(12, 2)
+  currency        String          @default("USD")
+  
+  status          PaymentStatus   @default(PENDING)
+  
+  deelPaymentId   String?         @unique
+  deelInvoiceId   String?
+  deelStatus      String?
+  
+  approvedAt      DateTime?
+  approvedBy      String?
+  submittedAt     DateTime?
+  processedAt     DateTime?
+  paidAt          DateTime?
+  failedAt        DateTime?
+  failureReason   String?
+  
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  contractor      Contractor      @relation(fields: [contractorId], references: [id])
+  timeEntries     TimeEntry[]
+  
+  @@index([contractorId])
+  @@index([status])
+  @@index([periodStart, periodEnd])
+}
+
+model ContractorNote {
+  id              String      @id @default(cuid())
+  
+  contractorId    String
+  authorId        String
+  authorName      String
+  
+  content         String
+  
+  createdAt       DateTime    @default(now())
+  
+  contractor      Contractor  @relation(fields: [contractorId], references: [id])
+  
+  @@index([contractorId])
+}
+
+model SyncLog {
+  id                String      @id @default(cuid())
+  
+  source            String
+  action            String
+  status            String
+  
+  recordsProcessed  Int         @default(0)
+  recordsFailed     Int         @default(0)
+  
+  errorMessage      String?
+  metadata          Json?
+  
+  startedAt         DateTime    @default(now())
+  completedAt       DateTime?
+}
+
+model AuditLog {
+  id              String      @id @default(cuid())
+  
+  userId          String
+  userName        String
+  
+  action          String
+  entityType      String
+  entityId        String
+  
+  previousValue   Json?
+  newValue        Json?
+  
+  ipAddress       String?
+  userAgent       String?
+  
+  createdAt       DateTime    @default(now())
+  
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+}
